@@ -1,0 +1,153 @@
+---
+title: "COVID 19 Data Analysis"
+author: "Adeline Shin"
+date: "3/18/2020"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(plotly)
+```
+
+# Loading and Tidying the Data
+```{r}
+setwd("./csse_covid_19_data/csse_covid_19_daily_reports")
+file_names = dir(pattern="*.csv") 
+full_covid_df = lapply(file_names, read.csv)
+
+covid_df = full_covid_df[[1]]
+
+for (i in 2:length(full_covid_df)) {
+  covid_df = bind_rows(covid_df, full_covid_df[[i]])
+}
+
+covid_df %<>% 
+# a 
+  mutate (`Province.State` = case_when(
+    (is.na(`Province.State`) & 
+       (`Country.Region` == "Australia")) ~ "New South Wales",
+    (is.na(`Province.State`) & 
+       (`Country.Region` == "Germany")) ~ "Bavaria", 
+    TRUE ~ `Province.State`)) %>% 
+  mutate (`Country.Region` = case_when(
+    `Province.State` == "Hong Kong" ~ "Hong Kong",
+    `Province.State` == "Taiwan" ~ "Taiwan",
+    `Province.State` == "Washington" ~ "US",
+# b
+    is.na (`Country.Region`) ~ "Mainland China",
+    TRUE ~ `Country.Region`)) %>% 
+# c
+  mutate(place = ifelse(is.na(`Province.State`),
+                        `Country.Region`,
+                        paste0(`Province.State`,", ",
+                               `Country.Region`))) %>% 
+# d
+  mutate(Last.Update = gsub("T", " ", Last.Update),
+         Last.Update = sub(" .*", "", Last.Update))
+
+top_df = covid_df[1:560, ] %>% 
+  mutate(Last.Update = mdy(Last.Update))
+bottom_df = covid_df[561:6438, ] %>% 
+  mutate(Last.Update = as_date(Last.Update))
+
+covid_df = bind_rows(top_df, bottom_df) %>% 
+  mutate(reportDate = 
+           date(`Last.Update`)) %>% 
+  group_by(place,reportDate) %>% 
+# e
+  slice(which.max(`Last.Update`)) %>% 
+  select(-c(place,`Last.Update`)) %>%
+  ungroup() %>%
+  # fill in missing dates for each place
+# f
+  group_by(place) %>% 
+  complete(reportDate = seq.Date(min(reportDate),
+                                 today(),
+                                 by="day")) %>% 
+  fill(c(Confirmed,Deaths,Recovered,
+         `Country.Region`,`Province.State`)) %>% 
+# g
+  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  ungroup() %>% 
+# h
+  mutate(dropcase = ((!str_detect(`Province.State`,",")) & 
+                       (reportDate  > "2020-01-31") &
+                       (`Country.Region` == "Canada" | `Country.Region` == "US"))) %>% 
+# dplyr called explicitly here because plotly has taken over 'filter'
+  dplyr::filter (!dropcase) 
+
+# simplifyiing data
+coronaDataSimple = covid_df %>% 
+  mutate(country = case_when(
+    str_detect(`Country.Region`,"China") ~ "China",
+    TRUE ~ "Other countries")) %>% 
+  mutate(location = case_when(
+    place == "Hubei, Mainland China" ~ "Hubei (Wuhan)",
+    country == "China" ~ "Other China",
+    TRUE ~ "Outside of China")) %>% 
+  group_by(location,reportDate) %>% 
+  summarize(Confirmed = sum(Confirmed),
+            Deaths = sum(Deaths),
+            Recovered = sum(Recovered)) %>% 
+  ungroup()
+```
+
+# US Data
+```{r}
+us_data = covid_df %>% 
+  mutate(country = case_when(
+    str_detect(`Country.Region`,"US") ~ "US",
+    TRUE ~ "Other countries")) %>% 
+  mutate(location = case_when(
+    str_detect(Province.State, "NY|New York") ~ "New York",
+    str_detect(Province.State, "CA|California") ~ "California",
+    str_detect(Province.State, "WA|Washington") ~ "Washington",
+    TRUE ~ "NA")) %>% 
+  group_by(location, reportDate) %>% 
+  summarize(Confirmed = sum(Confirmed),
+            Deaths = sum(Deaths),
+            Recovered = sum(Recovered)) %>% 
+  ungroup() %>% 
+  filter(!str_detect(location, "NA"))
+```
+
+# Plots
+```{r}
+myCaption <- " Data courtesy JHU/CSSE http://bit.ly/ncvdata"
+mySubtitle <- paste0(
+         "Confirmed cases by region through ",
+         (month(today())), "/",
+         (day(today())),"/",
+         (year(today())),".")
+
+coronaPlot2 <- coronaDataSimple %>% 
+  ggplot(aes(x=reportDate)) +
+  geom_point(aes(y = Confirmed,
+                 color = location)) +
+  geom_line(aes(y = Confirmed, 
+                color = location), 
+                linetype = "solid") + 
+  theme(axis.title.y = 
+        element_text(angle = 90,
+                     vjust = 1,size = 14),
+        legend.position = (c(.2,.8))) +
+  labs(title = "Novel coronavirus",
+       subtitle = mySubtitle,
+       y = "Cases", 
+       caption = myCaption)
+
+ggplotly(coronaPlot2)
+
+us_plot = us_data %>% 
+  ggplot(aes(x = reportDate)) +
+  geom_point(aes(y = Confirmed,
+                 color = location)) +
+  geom_line(aes(y = Confirmed,
+                 color = location))
+
+ggplotly(us_plot)
+```
+
